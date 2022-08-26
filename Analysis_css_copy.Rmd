@@ -1,0 +1,254 @@
+---
+title: "Analysis_css"
+author: "Annamaria_Culpo_228184"
+date: "20/8/2022"
+output: 
+  html_document:
+    theme: readable
+    toc: yes
+    toc_float: yes
+    df_print: paged
+editor_options:
+  chink_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE,
+                      message=FALSE,
+                      tidy.opts=list(width.cutoff = 60),
+                      tidy = TRUE)
+knitr::opts_knit$set(global.par=TRUE)
+
+# built-in output hook
+hook_output <- knitr::knit_hooks$get("output")
+# custom chunk option output.lines to truncate text output
+knitr::knit_hooks$set(output = function(x, options) {
+  n <- options$output.lines
+  if (!is.null(n)) {
+      x <- xfun::split_lines(x)
+      if(length(x) > n) {
+          top <- head(x, n)
+          bot <- tail(x, n)
+          x <- c(top, "\n....\n", bot)
+      }
+      x <- paste(x, collapse="\n")
+  }
+  hook_output(x, options)
+})
+```
+
+# Decision trees
+
+In order to analyze the variable importance of the predictors in the dataset, a regression decision tree is fitted using the abortion ratio as the response variable. At first, we load the library *tree* and we import the dataset.
+```{r}
+if(!require(tree)) {
+    install.packages("tree")
+    library(tree)
+}
+```
+
+
+```{r}
+options(scipen = 999)
+df <- read.csv("final_df_procapite.csv", header=T)
+head(df)
+```
+We rearrange the columns of the dataframe in order to have the response variable on the right end side, so it will be easier to fit the models.
+```{r}
+col_order <- c("geo", "country", "population", "age_1_child", "employed_women_2018", "social_benefit", "mean_income", "fertility_rate", "lb_18y_procapite", "lb_30y_procapite", "lb_inmar_procapite", "lb_outmar_procapite", "lb_foreign_procapite", "abortion_ratio")
+
+df_ord <- df[, col_order]
+```
+
+We fit a regression tree and we produce a summary of the resulting model.
+```{r}
+set.seed(2)
+tree_df <- tree(abortion_ratio ~ age_1_child + employed_women_2018 + social_benefit + 
+                  mean_income + fertility_rate + lb_18y_procapite + lb_30y_procapite + 
+                  lb_inmar_procapite + lb_outmar_procapite + lb_foreign_procapite, df_ord)
+summary(tree_df)
+plot(tree_df)
+text(tree_df, pretty=0)
+title(main="Unpruned regression tree of abortion ratio")
+```
+The summary highlights that the predictors that have been used to build the tree are just 4 out of 10 and they are:
+- Number of live births from married women per inhabitant. This is also the stump of the tree, so it means that is the most important variable from the ones selected in determining the abortion ratio. If this value is lower than 0.00545, the second variable to consider is the age of the mother when she gave birth to her first child. Instead, if the live births procapite inside marriage is greater than 0.00545, the second predictor to take into account is the live births procapite from foreign women.
+- Mean women's age when they had their first child. It is located in the left side of the tree and its cutpoint is nearly 29 years old. If the mean age of the women was less than 29 years old when they had their firstborn, then the predicted abortion ratio of the country is 295.5 (about 295 abortions per 1000 live births), which is pretty high. Instead if the mean age is lower than this cutpoint, also the variable regarding the live births from foreign women has to be considered.
+- Number of live births from foreign women per inhabitant. This predictor is present both on the left and on the right side of the tree with two different cutpoints.
+- Number of live births from women aged 30 per inhabitant.
+In summary, the unpruned regression tree assigns two of the highest values of abortion ratio to the countries where the number of live births from married women is lower than 0.00545 per inhabitant.
+
+A decision tree usually tends to overfit the data, eventually generating a problem of high variance. In order to partially fix this issue, the tree could be pruned: some branches could be removed and the tree with the lowest cross-validation error would be selected as the best one.
+```{r}
+cv.df_ord <- cv.tree(tree_df)
+plot(cv.df_ord$size, cv.df_ord$dev, type="b")
+title(main="Cross-validation error vs number of terminal nodes")
+cv.df_ord
+```
+The subtree with the lowest cross-validation error has 4 terminal nodes instead of 6, and it has a lower cross validation error then the one of the unpruned tree.
+```{r}
+prune_df_ord <- prune.tree(tree_df, best=4)
+plot(prune_df_ord)
+text(prune_df_ord, pretty=0)
+title(main="Pruned regression tree of abortion ratio")
+summary(prune_df_ord)
+```
+As happened for the unpruned tree, also the pruned one shows the number of live births inside marriage per inhabitant as the stump of the tree, with the same cutpoint as before. But in this case, if the value of this variable is lower than 0.00545, the predicted abortion ratio of the country is about 236 abortion per 1000 live births. The other variables that have stayed in the tree are the number of live births from foreign women and the number of live births from 30-yers-old mothers, both values referred to every inhabitant. 
+
+# Random forest
+
+A more efficient non-linear method based on several decision trees is random forest. To select the best number of predictors to pick at each split, a cross-validation function could be used. The function rfcv() of the randomForest package performs a k-fold cross-validation to select the best number m of predictors to pick at each split of a tree. The best m is the one associated to the lowest cross-validation error. The number of folds has been set as k=10. The step = 0.9 allows to decrease the number of predictors of 1 variable at a time. The rfcv() function outputs the number of predictors at each iteration (*n.var*), the cross-validation error (*error.cv*) and the predictions of the response variable (*predicted*) for every m.
+Then, the parameter mtry associated to the lowest cv error can be used to fit a random forest model on the data.
+```{r}
+library(randomForest)
+set.seed(2)
+nvar = 10 #number of all predictors
+(cv_randomforest <- rfcv(trainx = df_ord[,4:13], trainy = df_ord[,14], cv.fold = 10, scale = "log", step = 0.9 )) 
+cv_rf_error <- cv_randomforest$error.cv
+min_cv_index <- as.integer(names(which(cv_rf_error == min(cv_rf_error)[1])))
+
+```
+The number of parameters to pick at each split associated to the minimum cross validation error is `r min_cv_index`, as we can see also from the following plot.
+```{r}
+plot(c(1:10), rev(cv_rf_error), type="b", col="red", lwd=1.5, 
+     xlim = c(0,11), ylim = c(7400,9500),
+     xlab = "Number of predictors m",
+     ylab = "Cv error rate")
+title(main = "CV error as a function of the number of predictors")
+```
+Now we can fit a random forest model setting the parameter *mtry* to 9.
+```{r}
+best_rf_model <- randomForest(abortion_ratio ~ age_1_child + employed_women_2018 + social_benefit + 
+                  mean_income + fertility_rate + lb_18y_procapite + lb_30y_procapite + 
+                  lb_inmar_procapite + lb_outmar_procapite + lb_foreign_procapite, 
+                  data = df_ord, mtry = min_cv_index, importance=TRUE)
+best_rf_model
+
+```
+Random forest allows to check the importance of every predictor with respect to the response variable. 
+```{r}
+knitr::kable(importance(best_rf_model))
+```
+The first column represents the mean increase of the Mean Squared Error (in percentage) if the variable is removed from the model. The lowest the MSE is, the highest the accuracy of the model becomes. The first three variables listed (age of the mother at her firstborn, number of employed women and social benefits) have negative values. This means that if we remove them, the MSE decreases and the accuracy of the random forest model improves. On the contrary, all the other predictors present positive values in the first column of the table, so their removal from the model would augment the prediction error. In particular, the two most important variables necessary to obtain a performing random forest are the number of live births per capita from married and non-married women.
+
+The second column of the table measures the increment of the node purity that results from splits over that variable. As in the previous case, the greatest increase of the purity is associated to the live births per capita inside and outside marriage, while the lowest value is referred to the social benefits per inhabitant provided by the government. 
+
+A visual representation of what has been explained above could be rendered by the following plot.
+```{r}
+varImpPlot(best_rf_model)
+```
+# Lasso and ridge
+
+Since the predictors have different value ranges, standardizing them before applying Lasso and Ridge regression could be useful in order to have coefficients with a comparable magnitude. So we center every variable at zero and we standardize its variance at 1.
+```{r}
+library(dplyr)
+set.seed(123)
+df_scaled <- df_ord %>% mutate_at(c("age_1_child", "employed_women_2018", "social_benefit", "mean_income", "fertility_rate", "lb_18y_procapite", "lb_30y_procapite", "lb_inmar_procapite", "lb_outmar_procapite", "lb_foreign_procapite", "abortion_ratio"), ~(scale(.) %>% as.vector))
+```
+
+## Ridge
+```{r}
+library(tidyverse)
+library(ISLR2)
+library(glmnet)
+```
+```{r}
+#Ridge (alpha=0)
+x <- df_scaled[,4:13]
+y <- df_scaled[,14]
+ridge_mod <- glmnet(x, y, alpha=0, standardize = FALSE) #standardize=FALSE because the df is already scaled
+dim(coef(ridge_mod))
+par(mar=c(5, 4, 4, 9), xpd=TRUE)
+plot(ridge_mod, xvar="lambda") # coefficients vs log lambda
+legend("topright", lwd = 1, col = 1 : 10, legend = colnames(x), cex = .7, inset = c(-0.38,0))
+title(main="Ridge regression coefficients vs Log-lambda", line = 3)
+```
+100 different values of lambda have been applied to the 10 predictors (plus the intercept), generating a corresponding number of ridge regression models. In the plot above it can be seen that as long as the value of lambda increases, the coefficients are shrunk towards zero, even if they are never completely zeroed. When lambda is equal to zero, on the very left side of the plot, the coefficients are equal to the ones of a linear regression. 
+
+The parameter lambda controls the bias-variance trade-off: when lambda increases, the variance goes down, but the bias augments. In order to find the optimal value of lambda that allows a sort of compromise, we can use cross-validation. In this specific case, we are going to divide the dataset into train and test sets and we perform a 10-fold-cross-validation on the training set. 
+```{r}
+set.seed(2)
+x <- model.matrix(abortion_ratio ~ age_1_child + employed_women_2018 + social_benefit + 
+                  mean_income + fertility_rate + lb_18y_procapite + lb_30y_procapite + 
+                  lb_inmar_procapite + lb_outmar_procapite + lb_foreign_procapite, df_scaled[,4:14])
+y <- df_scaled[,14]
+```
+
+```{r}
+set.seed(2)
+train <- sample(1:nrow(x), nrow(x)/2)
+test <- -train # numerical indexes, so we complement with -
+y_test <- y[test]
+
+x_train <- x[train, ]
+x_test <- x[test, ]
+y_train <- y[train]
+```
+
+```{r}
+set.seed(2)
+cv_ridge <- cv.glmnet(x_train, y_train, alpha = 0, lambda = ridge_mod$lambda)
+best_lambda <- cv_ridge$lambda.min 
+best_lambda
+```
+Now we can examine the coefficient estimates corresponding to the value of lambda having the minimum cross-validation error.
+```{r}
+predict(ridge_mod, type="coefficients", s=best_lambda)
+```
+The coefficients with negative values imply that an increase of their referring variable leads to a decrease of the abortion ratio, keeping all the other elements fixed. This happens for:
+- The age of the mother at her firstborn. If in a country women tend to become mothers when they are not too young, the number of abortions is lower
+- The number of live births per inhabitant from mothers aged 30. This coefficient is one of the greatest, considering the absolute value. A woman in her 30s has probably a job or at least an economic and sentimental condition which is rather stable. Hence, she could be more stimulated to have a child. The opposite situation could regard a woman aged 18, who has just finished her course of study and she may not have enough resources to grow a child. In fact, the coefficient of this variable is positive, meaning that an increase of the number of live births from 18-years-old women in a country leads to a higher abortion ratio.
+- The number of live births per inhabitant from married women. This is also the coefficient with the highest absolute value, so its variable has the major effect in predicting the abortion ratio of a country. Marriage is a social institution which guarantees several rights to their members and to the offspring; rights that are often not available for unmarried partners. This could be one of the reasons that justify the negative coefficient of the in-marriage live births and the positive one of the out-marriage live births.
+- The number of live births from foreign women has a negative value, so the increase of the variable results in a decrease of the abortion ratio.
+
+Note that no coefficient is exactly equal to zero, because ridge regression shrinks all the coefficients towards zero, without completely eliminate them.
+
+Now we can evaluate the Mean Squared Error of the ridge regression model (MSE) on the test set, using the best lambda found above. 
+```{r}
+ridge_mod_train <- glmnet(x_train, y_train, alpha=0, standardize = FALSE)
+ridge_pred <- predict(ridge_mod_train, s=best_lambda, newx=x_test)
+(mse_test_ridge <- mean((ridge_pred - y_test)^2))
+```
+## Lasso
+
+We repeat the procedure adopted for the ridge regression also for the lasso. The main difference between the two shrinkage methods is the possibility for the lasso to perform variable selection. In fact, unlike ridge, lasso coefficients can be set to zero for lambdas sufficiently large.
+
+```{r}
+lasso_mod <- glmnet(x_train, y_train, alpha = 1, standardize = FALSE)
+dim(coef(lasso_mod))
+par(mar=c(5, 4, 4, 9), xpd=TRUE)
+plot(lasso_mod, xvar = "lambda")
+legend("topright", lwd = 1, col = 1 : 10, legend = colnames(x), cex = .7, inset = c(-0.38,0))
+title(main="Lasso regression coefficients vs Log-lambda", line = 3)
+```
+At a first glance, the plot of the lasso coefficients could seem similar to the one of the ridge. However, in this case some coefficients are set to zero in correspondence of increasing lambda values. It is visible also on the horizontal axis on the top of the graph, which shows the number of coefficients that are greater than zero. While in the ridge plot this axis has always values equal to ten (total number of the predictors), in the lasso graph the values decrease along with the rise of lambda. 
+
+Now we perform cross-validation to find the lambda associated to the least training mean squared error.
+```{r}
+set.seed(2)
+cv_lasso <- cv.glmnet(x_train, y_train, alpha = 1, lambda = lasso_mod$lambda)
+best_lambda_lasso <- cv_lasso$lambda.min 
+best_lambda_lasso
+```
+We use the best lambda to fit a lasso regression on the full dataset and we analyze the coefficients.
+```{r}
+lasso_mod_full <- glmnet(x, y, alpha=1, standardize = FALSE)
+# display coefficients using lambda chosen by CV
+predict(lasso_mod_full, type="coefficients", s=best_lambda_lasso)
+```
+Not all the coefficients are shown because, using the lambda associated to minimum training MSE, some of them are shrunk to zero. The variables that are present in the model, which can also be considered as the most relevant in predicting the abortion ratio of a country, are:
+- The fertility rate. Its coefficient is positive, meaning that when the fertility rate of a country grows, also the abortion rate tends to increase
+- The number of live births per inhabitant by women aged 18. Also in this case the coefficient is positive, so the variable is positively associated with the abortion ratio.
+- The number of live births per inhabitant from married women. As already suggested in the ridge regression analysis, the negative value of this coefficient could be due to the rights and stability that a marriage provides. Hence, a country with a high number of births from married couples seems to have a lower abortion rate. The opposite situation is faced by countries with significant number of live births from unmarried women. In fact, the coefficient of this predictor is positive.
+- The number of live births per inhabitant from foreign women, which has a negative coefficient, similarly to ridge regression.
+
+Finally we can calculate the Mean Squared Error on the test set, so that we can compare it with the one of the ridge regression model.
+```{r}
+lasso_pred <- predict(lasso_mod, s=best_lambda_lasso, newx=x_test)
+mse_test_lasso <- mean((lasso_pred - y_test)^2)
+m <- matrix(c(mse_test_ridge, mse_test_lasso), ncol = 2)
+colnames(m) <- c("MSE Ridge", "MSE Lasso")
+mse <- as_tibble(m)
+mse
+```
+The test mean squared error of the ridge regression is lower than the one of the lasso, meaning that ridge perform better in terms of predictive accuracy. Generally speaking, the lasso is indicated in contexts where a small number of predictors has substantial coefficients and the remaining ones have very small coefficients. Instead the ridge performs better when the response variable is associated to many variables and the coefficients have more or less all the same magnitude. In this case, if we exclude the intercept and the mean income, all the coefficients of the ridge regression are of the order of 10 to the power of -2 or -3. Hence, this could be one of the reasons why ridge seems to overperform lasso, even if their MSE are quite similar. 
